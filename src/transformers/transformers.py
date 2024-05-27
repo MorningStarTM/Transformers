@@ -121,6 +121,72 @@ class ViTModel(Model):
         
         return logits
     
+class SimpleCNN(tf.keras.Model):
+    def __init__(self):
+        super(SimpleCNN, self).__init__()
+
+        # Define the layers
+        self.conv1 = layers.Conv2D(32, (3, 3), activation='relu')
+        self.pool1 = layers.MaxPooling2D((2, 2))
+        
+        self.conv2 = layers.Conv2D(64, (3, 3), activation='relu')
+        self.pool2 = layers.MaxPooling2D((2, 2))
+        
+        self.conv3 = layers.Conv2D(128, (3, 3), activation='relu')
+        self.pool3 = layers.MaxPooling2D((2, 2))
+
+        self.conv4 = layers.Conv2D(256, (3, 3), activation='relu')
+        self.pool4 = layers.MaxPooling2D((2, 2))
+        
+
+    def call(self, inputs, training=False):
+        x = self.conv1(inputs)
+        x = self.pool1(x)
+        
+        x = self.conv2(x)
+        x = self.pool2(x)
+        
+        x = self.conv3(x)
+        x = self.pool3(x)
+        
+        x = self.conv4(x)
+        x = self.pool4(x)
+        
+        return x
+
+
+class ConViT(Model):
+    def __init__(self, image_size, patch_size, num_layers, num_classes, d_model, num_heads, mlp_dim, dropout_rate):
+        super(ViTModel, self).__init__()
+        self.num_patches = (image_size // patch_size) ** 2
+        self.patch = 0
+        self.patch_embedding = PatchEmbedding(self.num_patches, d_model)
+        self.class_token = ClassToken(d_model)
+        self.encoder_layers = [TransformerEncoderLayer(d_model, num_heads, mlp_dim, dropout_rate) for _ in range(num_layers)]
+        self.mlp_head = layers.Dense(num_classes)
+
+    def call(self, images, training):
+        # Create patches
+        patches = self.patch(images)
+        
+        # Create patch embeddings
+        embeddings = self.patch_embedding(patches)
+        
+        # Add class token
+        embeddings = self.class_token(embeddings)
+        
+        # Transformer encoder layers
+        for encoder_layer in self.encoder_layers:
+            embeddings = encoder_layer(embeddings, training)
+        
+        # Take the class token output
+        class_token_output = embeddings[:, 0]
+        
+        # MLP head
+        logits = self.mlp_head(class_token_output)
+        
+        return logits
+    
     
         
 
