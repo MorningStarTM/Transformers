@@ -3,7 +3,18 @@ from tensorflow.keras import layers, Model
 import numpy as np
 
 
+
+# Define the Patch layer
 class Patch(layers.Layer):
+    """
+    This class for make images into patches
+
+    Args:
+        patch_size (int)
+
+    Return:
+        patches
+    """
     def __init__(self, patch_size):
         super(Patch, self).__init__()
         self.patch_size = patch_size
@@ -21,9 +32,18 @@ class Patch(layers.Layer):
         patches = tf.reshape(patches, [batch_size, -1, patch_dims])
         return patches
 
-
-
+# Define the PatchEmbedding layer
 class PatchEmbedding(layers.Layer):
+    """
+    This class for represent patches as Embeddings with position embedding
+
+    Args:
+        num_patches (int)
+        embedding_dim (int)
+
+    Returns:
+        embedded patches
+    """
     def __init__(self, num_patches, embedding_dim):
         super(PatchEmbedding, self).__init__()
         self.num_patches = num_patches
@@ -37,13 +57,42 @@ class PatchEmbedding(layers.Layer):
         embedded_patches += self.position_embedding(positions)
         return embedded_patches
 
+# Define the ClassToken layer
+class ClassToken(layers.Layer):
+    """
+    this class for add class token for aggregate information fro, all patches for classification
+    """
+    def __init__(self):
+        super(ClassToken, self).__init__()
 
+    def build(self, input_shape):
+        w_init = tf.random_normal_initializer()
+        self.w = tf.Variable(
+            initial_value=w_init(shape=(1, 1, input_shape[-1]), dtype=tf.float32),
+            trainable=True
+        )
 
+    def call(self, inputs):
+        batch_size = tf.shape(inputs)[0]
+        hidden_dim = self.w.shape[-1]
+        cls = tf.broadcast_to(self.w, [batch_size, 1, hidden_dim])
+        cls = tf.cast(cls, dtype=inputs.dtype)
+        return cls
+
+# Define the MLP layer
 class MLP(layers.Layer):
+    """
+    This class creates simple Multi-Layer Perceptron
+
+    Args:
+        hidden_units (int)
+        dropout_rate (float)
+
+    Returns:
+        x (array)
+    """
     def __init__(self, hidden_units, dropout_rate):
         super(MLP, self).__init__()
-        self.hidden_units = hidden_units
-        self.dropout_rate = dropout_rate
         self.dense_layers = [layers.Dense(units, activation=tf.nn.gelu) for units in hidden_units]
         self.dropout = layers.Dropout(dropout_rate)
 
@@ -51,75 +100,105 @@ class MLP(layers.Layer):
         for dense in self.dense_layers:
             x = dense(x)
         return self.dropout(x)
-    
 
-
-class ClassToken(layers.Layer):
-    def __init__(self, embedding_dim):
-        super(ClassToken, self).__init__()
-        self.class_token = tf.Variable(tf.zeros((1, 1, embedding_dim)), trainable=True)
-
-    def call(self, embeddings):
-        batch_size = tf.shape(embeddings)[0]
-        class_tokens = tf.broadcast_to(self.class_token, [batch_size, 1, embeddings.shape[-1]])
-        return tf.concat([class_tokens, embeddings], axis=1)
-    
-
-
-
+# Define the TransformerEncoderLayer
 class TransformerEncoderLayer(layers.Layer):
-    def __init__(self, embedding_dim, num_heads, mlp_dim, dropout_rate):
-        super(TransformerEncoderLayer, self).__init__()
-        self.layer_norm1 = layers.LayerNormalization(epsilon=1e-6)
-        self.multi_head_attention = layers.MultiHeadAttention(num_heads=num_heads, key_dim=embedding_dim)
-        self.dropout1 = layers.Dropout(dropout_rate)
-        self.layer_norm2 = layers.LayerNormalization(epsilon=1e-6)
-        self.mlp = MLP([mlp_dim, embedding_dim], dropout_rate)
+    """
+    This class for Encodes and processes input embeddings using self-attention and feedforward networks.
 
-    def call(self, x, training):
-        # Multi-head Self Attention
-        attn_output = self.multi_head_attention(x, x)
-        attn_output = self.dropout1(attn_output, training=training)
-        x = self.layer_norm1(x + attn_output)
-        
-        # MLP
-        mlp_output = self.mlp(x)
-        x = self.layer_norm2(x + mlp_output)
+    Args:
+        num_heads (int) 
+        hidden_dim (int) 
+        mlp_dim (int) 
+        dropout_rate (float)
+
+    Returns:
+        x (array)
+    """
+    def __init__(self, num_heads, hidden_dim, mlp_dim, dropout_rate):
+        super(TransformerEncoderLayer, self).__init__()
+        self.ln1 = layers.LayerNormalization()
+        self.mha = layers.MultiHeadAttention(num_heads=num_heads, key_dim=hidden_dim)
+        self.add1 = layers.Add()
+        self.ln2 = layers.LayerNormalization()
+        self.mlp = MLP([mlp_dim, hidden_dim], dropout_rate)
+        self.add2 = layers.Add()
+
+    def call(self, x, training=False):
+        skip_1 = x
+        x = self.ln1(x)
+        x = self.mha(x, x)
+        x = self.add1([x, skip_1])
+
+        skip_2 = x
+        x = self.ln2(x)
+        x = self.mlp(x, training=training)
+        x = self.add2([x, skip_2])
+
         return x
 
+# Define the ViTModel
+class ViTModel(tf.keras.Model):
+    """
+    This class  for Integrates all components to create the complete Vision Transformer (ViT) model.
 
+    Args:
+        image_size (int) 
+        patch_size  
+        num_layers
+        num_classes
+        hidden_dim
+        num_heads
+        mlp_dim
+        dropout_rate
 
-class ViTModel(Model):
-    def __init__(self, image_size, patch_size, num_layers, num_classes, d_model, num_heads, mlp_dim, dropout_rate):
+    Return:
+    """
+    def __init__(self, image_size, patch_size, num_layers, num_classes, hidden_dim, num_heads, mlp_dim, dropout_rate=0.1):
         super(ViTModel, self).__init__()
-        self.num_patches = (image_size // patch_size) ** 2
-        self.patch = Patch(patch_size)
-        self.patch_embedding = PatchEmbedding(self.num_patches, d_model)
-        self.class_token = ClassToken(d_model)
-        self.encoder_layers = [TransformerEncoderLayer(d_model, num_heads, mlp_dim, dropout_rate) for _ in range(num_layers)]
+        num_patches = (image_size // patch_size) ** 2
+
+        # Initialize the components
+        self.patch_extractor = Patch(patch_size)
+        self.patch_embedding = PatchEmbedding(num_patches=num_patches, embedding_dim=hidden_dim)
+        self.class_token = ClassToken()
+        self.transformer_encoder_layers = [
+            TransformerEncoderLayer(
+                num_heads,
+                hidden_dim,
+                mlp_dim,
+                dropout_rate,
+            ) for _ in range(num_layers)
+        ]
+        self.ln = layers.LayerNormalization()
         self.mlp_head = layers.Dense(num_classes)
 
-    def call(self, images, training):
-        # Create patches
-        patches = self.patch(images)
+    def call(self, images, training=False):
+        # Extract patches from the image
+        patches = self.patch_extractor(images)
         
-        # Create patch embeddings
-        embeddings = self.patch_embedding(patches)
-        
-        # Add class token
-        embeddings = self.class_token(embeddings)
-        
-        # Transformer encoder layers
-        for encoder_layer in self.encoder_layers:
-            embeddings = encoder_layer(embeddings, training)
-        
-        # Take the class token output
-        class_token_output = embeddings[:, 0]
-        
-        # MLP head
-        logits = self.mlp_head(class_token_output)
-        
+        # Embed the patches
+        x = self.patch_embedding(patches)
+
+        # Add the class token
+        cls_token = self.class_token(x)
+        x = tf.concat([cls_token, x], axis=1)
+
+        # Pass through the transformer encoder layers
+        for layer in self.transformer_encoder_layers:
+            x = layer(x, training=training)
+
+        # Normalize
+        x = self.ln(x)
+
+        # Use the class token's representation for classification
+        cls_token_final = x[:, 0]
+        logits = self.mlp_head(cls_token_final)
+
         return logits
+    
+
+
     
 class SimpleCNN(tf.keras.Model):
     def __init__(self):
